@@ -3,7 +3,6 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/release-24.05";
-    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -22,9 +21,10 @@
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             bun
+            nodePackages.typescript-language-server
+            just
           ];
 
-          shellHook = '''';
         };
       }
     );
