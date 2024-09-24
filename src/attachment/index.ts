@@ -115,6 +115,7 @@ export async function pathOrUrlToAttachmentMessage(
         const imageContent = await downloadImageAsUint8Array(
           attachmentType.url,
         );
+
         return newImageBody(
           attachmentType.imageType,
           uint8ArrayToBase64(imageContent),

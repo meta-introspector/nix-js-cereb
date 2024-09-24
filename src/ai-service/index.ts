@@ -9,7 +9,7 @@ export interface AiClient {
 
 export interface TokenUsage {
   inputToken: number;
-  ouptutToken: number;
+  outputToken: number;
 }
 
 export interface Chat {

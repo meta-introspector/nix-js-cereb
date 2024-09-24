@@ -44,7 +44,7 @@ class ClaudeChat implements Chat {
   tokenUsage(): TokenUsage {
     return {
       inputToken: this.inputTokenSummary,
-      ouptutToken: this.outputTokenSummary,
+      outputToken: this.outputTokenSummary,
     };
   }
   history(): Array<MessageHistory> {
@@ -64,9 +64,19 @@ class ClaudeChat implements Chat {
     };
     messages.push(newMessage);
 
+    let maxToken: number;
+
+    if (query.maxToken) {
+      maxToken = query.maxToken | 0;
+      if (maxToken <= 0) {
+        maxToken = this.config.defaultMaxToken;
+      }
+    } else {
+      maxToken = this.config.defaultMaxToken;
+    }
     const response: Anthropic.Message = await this.client.messages.create({
       model: this.model,
-      max_tokens: query.maxToken || this.config.defaultMaxToken,
+      max_tokens: maxToken,
       system: query.systemPrompt,
       temperature: query.temperature,
 
@@ -96,7 +106,7 @@ class ClaudeChat implements Chat {
     this.outputTokenSummary += output_tokens;
 
     return {
-      tokenUsage: { inputToken: input_tokens, ouptutToken: output_tokens },
+      tokenUsage: { inputToken: input_tokens, outputToken: output_tokens },
       content: responseBodies,
     };
   }

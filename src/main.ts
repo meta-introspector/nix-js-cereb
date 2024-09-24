@@ -2,9 +2,10 @@ import {
   type MessageBody,
   newAiClientFromModel,
   newTextBody,
+  type TokenUsage,
 } from "./ai-service";
 import { pathOrUrlToAttachmentMessage } from "./attachment";
-import { messagesFromMarkdown, queryResponseToMarkdown } from "./markdown";
+import { messagesFromMarkdown, messageBodyToMarkdown } from "./markdown";
 
 import { Command } from "commander";
 import getStdin from "get-stdin";
@@ -15,6 +16,8 @@ program
   .argument("[input_file]", "input file name or input from stdin")
   .option("--markdown")
   .option("--format <string>", "json|markdown", "json")
+  .option("--with-input")
+  .option("--max-token <number>", "maximum token to generate")
   .option(
     "--model <string>",
     "specified or read from environment ${CEREB_DEFAULT_MODEL}",
@@ -24,7 +27,8 @@ program
   .parse();
 
 const [inputFile] = program.args;
-const { model, format, markdown, attachement, pretty } = program.opts();
+const { model, format, markdown, attachement, pretty, withInput, maxToken } =
+  program.opts();
 
 type Format = "json" | "markdown";
 
@@ -51,30 +55,62 @@ if (!input || !input.trim()) {
 
 const typedFormat = validateFormat(format);
 
-let messages: Array<MessageBody> = [];
+let queryMessages: Array<MessageBody> = [];
 if (attachement) {
   const attachementMessage = await pathOrUrlToAttachmentMessage(attachement);
-  messages.push(attachementMessage);
+
+  queryMessages.push(attachementMessage);
 }
 if (markdown) {
-  messages = await messagesFromMarkdown(input);
+  queryMessages.push(...(await messagesFromMarkdown(input)));
 } else {
-  messages = [newTextBody(input)];
+  queryMessages.push(newTextBody(input));
 }
 
 const aiClient = newAiClientFromModel(model);
 const chat = await aiClient.newChat();
-let response = await chat.sendQuery({ bodies: messages });
+let response = await chat.sendQuery({
+  bodies: queryMessages,
+  maxToken,
+});
 
 if (typedFormat === "markdown") {
-  const markdownResponse = queryResponseToMarkdown("assistant", response);
+  const markdownResponse = messageBodyToMarkdown(
+    "assistant",
+    response.content,
+    response.tokenUsage,
+  );
+
+  if (withInput) {
+    const markdownInput = messageBodyToMarkdown("user", queryMessages);
+    process.stdout.write(markdownInput + "\n\n");
+  }
+
   process.stdout.write(markdownResponse);
   process.exit(0);
 } else if (typedFormat === "json") {
-  if (pretty) {
-    process.stdout.write(JSON.stringify(response, null, 4));
+  let jsonResult: {
+    input?: Array<MessageBody>;
+    response: Array<MessageBody>;
+    tokenUsage: TokenUsage;
+  };
+  if (withInput) {
+    jsonResult = {
+      input: queryMessages,
+      response: response.content,
+      tokenUsage: response.tokenUsage,
+    };
   } else {
-    process.stdout.write(JSON.stringify(response));
+    jsonResult = {
+      response: response.content,
+      tokenUsage: response.tokenUsage,
+    };
+  }
+
+  if (pretty) {
+    process.stdout.write(JSON.stringify(jsonResult, null, 4));
+  } else {
+    process.stdout.write(JSON.stringify(jsonResult));
   }
 
   process.exit(0);

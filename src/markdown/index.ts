@@ -1,15 +1,6 @@
 import { Marked, Parser, Renderer, MarkedOptions } from "@ts-stack/markdown";
-import {
-  isUrl,
-  detectAttachmentType,
-  pathOrUrlToAttachmentMessage,
-} from "~/attachment";
-import {
-  type MessageBody,
-  newTextBody,
-  newImageBody,
-  type QueryResponse,
-} from "~/ai-service";
+import { isUrl, pathOrUrlToAttachmentMessage } from "~/attachment";
+import { type MessageBody, newTextBody, type TokenUsage } from "~/ai-service";
 import path from "path";
 import * as cheerio from "cheerio";
 
@@ -155,6 +146,7 @@ export async function elemsToMessage(
   elems: Array<Elem>,
 ): Promise<Array<MessageBody>> {
   let messages: Array<MessageBody> = [];
+
   for (const eachElem of elems) {
     switch (eachElem.type) {
       case "h2":
@@ -164,10 +156,14 @@ export async function elemsToMessage(
       case "pre":
         if (eachElem.class) {
           if (eachElem.class.startsWith("lang-")) {
-            const lang = eachElem.class.replace("lang-", "");
-            messages.push(
-              newTextBody(`\`\`\`${lang}\n${eachElem.content}\n\`\`\``),
-            );
+            if (eachElem.class !== "lang-cereb-meta") {
+              const lang = eachElem.class.replace("lang-", "");
+              messages.push(
+                newTextBody(`\`\`\`${lang}\n${eachElem.content}\n\`\`\``),
+              );
+            }
+          } else {
+            messages.push(newTextBody(`\`\`\`\n${eachElem.content}\n\`\`\``));
           }
         } else {
           messages.push(newTextBody(`\`\`\`\n${eachElem.content}\n\`\`\``));
@@ -199,11 +195,12 @@ export async function messagesFromMarkdown(
   return await elemsToMessage(elems);
 }
 
-export function queryResponseToMarkdown(
+export function messageBodyToMarkdown(
   role: string,
-  response: QueryResponse,
+  contents: Array<MessageBody>,
+  meta?: TokenUsage,
 ): string {
-  let content = response.content
+  let content = contents
     .map((content) => {
       if (content.type === "text") {
         return content.text;
@@ -211,6 +208,13 @@ export function queryResponseToMarkdown(
       return null;
     })
     .join("\n");
+  if (meta) {
+    content += `\n\`\`\`cereb-meta
+input  token: ${meta.inputToken}
+output token: ${meta.outputToken}
+\`\`\`
+`;
+  }
 
   return `${role}
 ---
@@ -310,7 +314,6 @@ ${content}`;
 //    class: undefined,
 //  }
 //]
-//tacogips@mother|/d/gits/tacogips/cereb on main!
 //± just dev
 //bun src/main.ts
 //null

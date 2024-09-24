@@ -16,10 +16,14 @@ export async function readFileString(path: string): Promise<string> {
   return await Bun.file(path).text();
 }
 
-export function uint8ArrayToBase64(array: Uint8Array): string {
-  const numberArray = Array.from(array);
-  const binaryString = String.fromCharCode.apply(null, numberArray);
-  return btoa(binaryString);
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
+  var binary = "";
+  var len = bytes.byteLength;
+  for (var i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+
+  return btoa(binary);
 }
 
 export async function writeToPath(content: ArrayBuffer, path: string) {
