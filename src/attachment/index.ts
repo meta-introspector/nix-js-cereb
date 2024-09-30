@@ -38,7 +38,7 @@ export function isUrl(maybeUrl: string): boolean {
   );
 }
 
-async function isFilePath(maybePath: string): Promise<boolean> {
+export async function isFilePath(maybePath: string): Promise<boolean> {
   return Bun.file(maybePath).exists();
 }
 

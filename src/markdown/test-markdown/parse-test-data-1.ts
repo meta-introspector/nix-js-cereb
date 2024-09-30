@@ -23,9 +23,11 @@ some text
 
 what is this?
 
-[[image.png]]
+[[inner_image.png]]
 
 [aaa](http://funny-example.me/some.jpg)
+
+[[http://inner-image.me/some.jpg]]
 
 what is this, again?
 
@@ -79,14 +81,18 @@ const expected = [
     text: "what is this?",
   },
   {
-    type: "p_with_link",
-    href: "/workdir/image.png",
-    text: "image.png",
+    text: "**inner_image.png**",
+    type: "p_without_link",
   },
   {
     type: "p_with_link",
     href: "http://funny-example.me/some.jpg",
     text: "aaa",
+  },
+  {
+    type: "p_with_link",
+    href: "http://inner-image.me/some.jpg",
+    text: "http://inner-image.me/some.jpg",
   },
   {
     type: "p_without_link",

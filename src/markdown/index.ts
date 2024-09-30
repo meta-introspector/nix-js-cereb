@@ -1,5 +1,5 @@
-import { Marked, Parser, Renderer, MarkedOptions } from "@ts-stack/markdown";
-import { isUrl, pathOrUrlToAttachmentMessage } from "~/attachment";
+import { Marked, Renderer, MarkedOptions } from "@ts-stack/markdown";
+import { isUrl, isFilePath, pathOrUrlToAttachmentMessage } from "~/attachment";
 import {
   Role,
   type MessageHistory,
@@ -44,19 +44,18 @@ class CustomMdRenderer extends Renderer {
   }
 
   override paragraph(text: string) {
-    const matched = obsidianInternalLinkRegex.exec(text);
-
     text = text.replace(obsidianInternalLinkRegex, (match, innerLink) => {
       let destination;
       if (isUrl(innerLink)) {
         destination = innerLink;
+        return `<a href="${destination}">${innerLink}</a>`;
       } else {
-        destination = this.rootDirPath
-          ? path.join(this.rootDirPath, innerLink)
-          : innerLink;
+        //destination = this.rootDirPath
+        //  ? path.join(this.rootDirPath, innerLink)
+        //  : innerLink;
+        //TODO(tacogips) open the innternal link as attachement in the future
+        return "**" + innerLink + "**";
       }
-
-      return `<a href="${destination}">${innerLink}</a>`;
     });
     return `<p>` + text + `</p>\n`;
   }
