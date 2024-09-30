@@ -1,11 +1,17 @@
 import {
   type MessageBody,
+  type MessageHistory,
+  type QueryResponse,
+  Role,
   newAiClientFromModel,
   newTextBody,
   type TokenUsage,
+  emptyResponse,
 } from "./ai-service";
 import { pathOrUrlToAttachmentMessage } from "./attachment";
 import { messagesFromMarkdown, messageBodyToMarkdown } from "./markdown";
+
+import { type QueryMessages } from "./query";
 
 import { Command } from "commander";
 import getStdin from "get-stdin";
@@ -14,9 +20,11 @@ const program = new Command();
 program
   .name("cereb")
   .argument("[input_file]", "input file name or input from stdin")
-  .option("--markdown")
-  .option("--format <string>", "json|markdown", "json")
-  .option("--with-input")
+  .option("--raw-input")
+  .option("--dry-run")
+  .option("--no-latest-query")
+  .option("--no-history")
+  .option("--format <string>", "json|markdown", "markdown")
   .option("--max-token <number>", "maximum token to generate")
   .option(
     "--model <string>",
@@ -27,8 +35,17 @@ program
   .parse();
 
 const [inputFile] = program.args;
-const { model, format, markdown, attachement, pretty, withInput, maxToken } =
-  program.opts();
+const {
+  model,
+  format,
+  rawInput,
+  dryRun,
+  attachement,
+  pretty,
+  latestQuery,
+  history,
+  maxToken,
+} = program.opts();
 
 type Format = "json" | "markdown";
 
@@ -55,34 +72,66 @@ if (!input || !input.trim()) {
 
 const typedFormat = validateFormat(format);
 
-let queryMessages: Array<MessageBody> = [];
+const queryMessage: QueryMessages = {
+  history: [],
+  newMessage: [],
+};
+
 if (attachement) {
   const attachementMessage = await pathOrUrlToAttachmentMessage(attachement);
-
-  queryMessages.push(attachementMessage);
+  queryMessage.newMessage.push(attachementMessage);
 }
-if (markdown) {
-  queryMessages.push(...(await messagesFromMarkdown(input)));
+
+if (rawInput) {
+  queryMessage.newMessage.push(newTextBody(input));
 } else {
-  queryMessages.push(newTextBody(input));
+  const { history, newMessage } = await messagesFromMarkdown(input);
+  queryMessage.history = history;
+  queryMessage.newMessage = newMessage;
 }
 
-const aiClient = newAiClientFromModel(model);
-const chat = await aiClient.newChat();
-let response = await chat.sendQuery({
-  bodies: queryMessages,
-  maxToken,
-});
+if (queryMessage.newMessage.length === 0) {
+  console.error("No new user query");
+  process.exit(1);
+}
+
+let response: QueryResponse;
+if (dryRun) {
+  response = emptyResponse();
+} else {
+  const aiClient = newAiClientFromModel(model);
+  const chat = await aiClient.newChat();
+  chat.pushHistories(queryMessage.history);
+
+  response = await chat.sendQuery({
+    bodies: queryMessage.newMessage,
+    maxToken,
+  });
+}
 
 if (typedFormat === "markdown") {
   const markdownResponse = messageBodyToMarkdown(
-    "assistant",
+    Role.Assistant,
     response.content,
     response.tokenUsage,
+    response.usedModel,
   );
 
-  if (withInput) {
-    const markdownInput = messageBodyToMarkdown("user", queryMessages);
+  if (history) {
+    queryMessage.history.forEach((history) => {
+      const markdownInput = messageBodyToMarkdown(
+        history.role,
+        history.messages,
+      );
+      process.stdout.write(markdownInput + "\n\n");
+    });
+  }
+
+  if (latestQuery) {
+    const markdownInput = messageBodyToMarkdown(
+      Role.User,
+      queryMessage.newMessage,
+    );
     process.stdout.write(markdownInput + "\n\n");
   }
 
@@ -90,22 +139,30 @@ if (typedFormat === "markdown") {
   process.exit(0);
 } else if (typedFormat === "json") {
   let jsonResult: {
-    input?: Array<MessageBody>;
+    input?: Array<MessageHistory>;
     response: Array<MessageBody>;
     tokenUsage: TokenUsage;
+    model: string | null;
   };
-  if (withInput) {
-    jsonResult = {
-      input: queryMessages,
-      response: response.content,
-      tokenUsage: response.tokenUsage,
-    };
-  } else {
-    jsonResult = {
-      response: response.content,
-      tokenUsage: response.tokenUsage,
-    };
+
+  const input = [];
+  if (latestQuery) {
+    input.push(...queryMessage.history);
   }
+
+  if (latestQuery) {
+    input.push({
+      role: Role.User,
+      messages: queryMessage.newMessage,
+    });
+  }
+
+  jsonResult = {
+    input: input,
+    response: response.content,
+    tokenUsage: response.tokenUsage,
+    model: response.usedModel,
+  };
 
   if (pretty) {
     process.stdout.write(JSON.stringify(jsonResult, null, 4));

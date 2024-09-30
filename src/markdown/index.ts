@@ -1,10 +1,22 @@
 import { Marked, Parser, Renderer, MarkedOptions } from "@ts-stack/markdown";
 import { isUrl, pathOrUrlToAttachmentMessage } from "~/attachment";
-import { type MessageBody, newTextBody, type TokenUsage } from "~/ai-service";
+import {
+  Role,
+  type MessageHistory,
+  type MessageBody,
+  newTextBody,
+  type TokenUsage,
+} from "~/ai-service";
 import path from "path";
 import * as cheerio from "cheerio";
+import { type QueryMessages } from "~/query";
 
 const obsidianInternalLinkRegex = /\[\[([^\[\]]+?)\]\]/g;
+
+function roleDescription(role: Role): string {
+  return "cereb-" + role;
+}
+
 class CustomMdRenderer extends Renderer {
   constructor(
     private rootDirPath?: string,
@@ -50,7 +62,7 @@ class CustomMdRenderer extends Renderer {
   }
 }
 
-function parseMarkdown(
+export function parseMarkdownAsHtml(
   md: string,
   rootWorkingDir?: string,
   currentDir?: string,
@@ -60,16 +72,18 @@ function parseMarkdown(
     gfm: true,
     tables: true,
     breaks: false,
-    pedantic: false,
+    pedantic: true,
     sanitize: true,
-    smartLists: true,
-    smartypants: false,
   });
 
   return result;
 }
 
-type Elem =
+export type Elem =
+  | {
+      type: "hr";
+      headOfPage: boolean;
+    }
   | {
       type: "h2";
       id?: string;
@@ -81,6 +95,10 @@ type Elem =
       class?: string;
     }
   | {
+      type: "list_elem";
+      text: string;
+    }
+  | {
       type: "p_with_link";
       href?: string;
       text: string;
@@ -90,13 +108,13 @@ type Elem =
       text: string;
     };
 
-function htmlToElems(html: string): Array<Elem> {
+export function htmlToElems(html: string): Array<Elem> {
   Array<MessageBody>;
   let parser = cheerio.load(html);
 
   const elements: Elem[] = [];
 
-  parser("h2, pre, p").each((_index, element) => {
+  parser("hr, h, h2, h3, pre, p, li").each((index, element) => {
     const el = parser(element);
     if (!el) {
       return null;
@@ -108,6 +126,13 @@ function htmlToElems(html: string): Array<Elem> {
     const tagName = rawTagName.toLowerCase();
 
     switch (tagName) {
+      case "hr":
+        elements.push({
+          type: "hr",
+          headOfPage: index === 0,
+        });
+        break;
+
       case "h2":
         elements.push({
           type: "h2",
@@ -120,6 +145,13 @@ function htmlToElems(html: string): Array<Elem> {
           type: "pre",
           content: el.text().trim(),
           class: el.find("code").attr("class"),
+        });
+        break;
+
+      case "li":
+        elements.push({
+          type: "list_elem",
+          text: el.text(),
         });
         break;
       case "p":
@@ -137,6 +169,11 @@ function htmlToElems(html: string): Array<Elem> {
           });
         }
         break;
+      default:
+        elements.push({
+          type: "p_without_link",
+          text: el.text(),
+        });
     }
   });
   return elements;
@@ -144,13 +181,75 @@ function htmlToElems(html: string): Array<Elem> {
 
 export async function elemsToMessage(
   elems: Array<Elem>,
-): Promise<Array<MessageBody>> {
-  let messages: Array<MessageBody> = [];
+  ignoreHeaderBlock: boolean = true,
+): Promise<QueryMessages> {
+  let messageHistories: Array<MessageHistory> = [];
+
+  let currentRole = Role.User;
+  let currentRoleMessages: Array<MessageBody> = [];
+
+  const userRoleDesc = roleDescription(Role.User);
+  const assistantRoleDesc = roleDescription(Role.Assistant);
+  let beforeHeaderBlock = true;
+  let duringHeaderBlock = false;
+
+  let mustSkipHeaderBlock = false;
+
+  if (elems && elems.length > 0) {
+    if (
+      ignoreHeaderBlock &&
+      elems[0].type == "hr" &&
+      elems[0].headOfPage == true
+    ) {
+      mustSkipHeaderBlock = true;
+    }
+  }
 
   for (const eachElem of elems) {
     switch (eachElem.type) {
+      case "hr":
+        if (mustSkipHeaderBlock) {
+          if (beforeHeaderBlock) {
+            beforeHeaderBlock = false;
+            duringHeaderBlock = true;
+          } else if (duringHeaderBlock) {
+            currentRoleMessages = [];
+            duringHeaderBlock = false;
+          }
+        }
+
+        break;
+
       case "h2":
-        //skip for now
+        if (
+          eachElem.id.toString() == assistantRoleDesc ||
+          eachElem.id.toString() === userRoleDesc
+        ) {
+          if (currentRoleMessages.length !== 0) {
+            messageHistories.push({
+              role: currentRole,
+              messages: currentRoleMessages,
+            });
+            switch (eachElem.id) {
+              case assistantRoleDesc:
+                currentRole = Role.Assistant;
+                break;
+              case userRoleDesc:
+                currentRole = Role.User;
+                break;
+            }
+            currentRoleMessages = [];
+          }
+        }
+
+        // the closing hr tag  might be parse as "h2"
+        if (mustSkipHeaderBlock) {
+          if (duringHeaderBlock) {
+            currentRoleMessages = [];
+            duringHeaderBlock = false;
+          }
+        }
+
         break;
 
       case "pre":
@@ -158,47 +257,88 @@ export async function elemsToMessage(
           if (eachElem.class.startsWith("lang-")) {
             if (eachElem.class !== "lang-cereb-meta") {
               const lang = eachElem.class.replace("lang-", "");
-              messages.push(
+              currentRoleMessages.push(
                 newTextBody(`\`\`\`${lang}\n${eachElem.content}\n\`\`\``),
               );
             }
           } else {
-            messages.push(newTextBody(`\`\`\`\n${eachElem.content}\n\`\`\``));
+            currentRoleMessages.push(
+              newTextBody(`\`\`\`\n${eachElem.content}\n\`\`\``),
+            );
           }
         } else {
-          messages.push(newTextBody(`\`\`\`\n${eachElem.content}\n\`\`\``));
+          currentRoleMessages.push(
+            newTextBody(`\`\`\`\n${eachElem.content}\n\`\`\``),
+          );
         }
+        break;
+      case "list_elem":
+        currentRoleMessages.push(newTextBody("- " + eachElem.text));
         break;
 
       case "p_with_link":
         if (eachElem.href) {
-          messages.push(await pathOrUrlToAttachmentMessage(eachElem.href));
+          currentRoleMessages.push(
+            await pathOrUrlToAttachmentMessage(eachElem.href),
+          );
         }
         break;
 
       case "p_without_link":
-        messages.push(newTextBody(eachElem.text));
+        currentRoleMessages.push(newTextBody(eachElem.text));
         break;
     }
   }
 
-  return messages;
+  if (mustSkipHeaderBlock && duringHeaderBlock) {
+    currentRoleMessages = [];
+    duringHeaderBlock = false;
+  }
+
+  if (currentRoleMessages.length !== 0) {
+    messageHistories.push({
+      role: currentRole,
+      messages: currentRoleMessages,
+    });
+    currentRoleMessages = [];
+  }
+
+  if (messageHistories.length === 0) {
+    return {
+      history: [],
+      newMessage: [],
+    };
+  }
+  const lastRoleMessages = messageHistories.pop() as MessageHistory;
+  if (lastRoleMessages.role === Role.User) {
+    return {
+      history: messageHistories,
+      newMessage: lastRoleMessages.messages,
+    };
+  } else {
+    messageHistories.push(lastRoleMessages);
+    return {
+      history: messageHistories,
+      newMessage: [],
+    };
+  }
 }
 
 export async function messagesFromMarkdown(
   md: string,
   rootWorkingDir?: string,
   currentDir?: string,
-): Promise<Array<MessageBody>> {
-  const parsedHtml = parseMarkdown(md, rootWorkingDir, currentDir);
+): Promise<QueryMessages> {
+  const parsedHtml = parseMarkdownAsHtml(md, rootWorkingDir, currentDir);
   const elems = htmlToElems(parsedHtml);
   return await elemsToMessage(elems);
 }
 
 export function messageBodyToMarkdown(
-  role: string,
+  role: Role,
   contents: Array<MessageBody>,
-  meta?: TokenUsage,
+  tokenUsae?: TokenUsage,
+  usedModel?: string | null,
 ): string {
   let content = contents
     .map((content) => {
@@ -208,190 +348,16 @@ export function messageBodyToMarkdown(
       return null;
     })
     .join("\n");
-  if (meta) {
+  if (tokenUsae) {
     content += `\n\`\`\`cereb-meta
-input  token: ${meta.inputToken}
-output token: ${meta.outputToken}
+ input token: ${tokenUsae.inputToken}
+output token: ${tokenUsae.outputToken}
+       model: ${usedModel}
 \`\`\`
 `;
   }
 
-  return `${role}
+  return `${roleDescription(role)}
 ---
 ${content}`;
 }
-
-// TODO(tacogips) test
-//user
-//---
-//
-//\`\`\`python
-//1+2
-//\`\`\`
-//
-//\`\`\`sql
-//select * from sss
-//\`\`\`
-//
-//\`\`\`
-//some text
-//\`\`\`
-//
-//
-//![some](image.png)
-//
-//[aaa](image.png)
-//
-//what is this?
-//
-//[[image.png]]
-//
-//[aaa](http://tacogips.me/some.jpg)
-//
-//what is this, again?
-//
-//
-//
-//
-//
-//assistant
-//---
-//
-//	asdf
-//`;
-//
-//
-//[
-//  {
-//    type: "h2",
-//    id: "dummy",
-//    text: "dummy",
-//  }, {
-//    type: "h2",
-//    id: "user",
-//    text: "user",
-//  }, {
-//    type: "pre",
-//    content: "1+2",
-//    class: "lang-python",
-//  }, {
-//    type: "pre",
-//    content: "select * from sss",
-//    class: "lang-sql",
-//  }, {
-//    type: "pre",
-//    content: "some text",
-//    class: undefined,
-//  }, {
-//    type: "p_with_link",
-//    href: "/d/some/root/current/image.png",
-//    text: "some",
-//  }, {
-//    type: "p_with_link",
-//    href: "/d/some/root/current/image.png",
-//    text: "aaa",
-//  }, {
-//    type: "p_with_link",
-//    href: "/d/some/root/image.png",
-//    text: "image.png",
-//  }, {
-//    type: "p_with_link",
-//    href: "http://tacogips.me/some.jpg",
-//    text: "aaa",
-//  }, {
-//    type: "p_without_link",
-//    text: "what is this?",
-//  }, {
-//    type: "p_without_link",
-//    text: "そうですね",
-//  }, {
-//    type: "h2",
-//    id: "assistant",
-//    text: "assistant",
-//  }, {
-//    type: "pre",
-//    content: "asdf",
-//    class: undefined,
-//  }
-//]
-//± just dev
-//bun src/main.ts
-//null
-//null
-//null
-//null
-//null
-//[ "[[image.png]]", "image.png" ]
-//null
-//null
-//null
-//<h2 id="user">user</h2>
-//
-//<pre><code class="lang-python">1+2
-//</code></pre>
-//
-//<pre><code class="lang-sql">select * from sss
-//</code></pre>
-//
-//<pre><code>some text
-//</code></pre>
-//<p><a href="/d/some/root/current/image.png">some</a></p>
-//<p><a href="/d/some/root/current/image.png">aaa</a></p>
-//<p>what is this?</p>
-//<p><a href="/d/some/root/image.png">image.png</a></p>
-//<p><a href="http://tacogips.me/some.jpg">aaa</a></p>
-//<p>what is this, again?</p>
-//<h2 id="assistant">assistant</h2>
-//
-//<pre><code>asdf
-//</code></pre>
-//
-//[
-//  {
-//    type: "h2",
-//    id: "user",
-//    text: "user",
-//  }, {
-//    type: "pre",
-//    content: "1+2",
-//    class: "lang-python",
-//  }, {
-//    type: "pre",
-//    content: "select * from sss",
-//    class: "lang-sql",
-//  }, {
-//    type: "pre",
-//    content: "some text",
-//    class: undefined,
-//  }, {
-//    type: "p_with_link",
-//    href: "/d/some/root/current/image.png",
-//    text: "some",
-//  }, {
-//    type: "p_with_link",
-//    href: "/d/some/root/current/image.png",
-//    text: "aaa",
-//  }, {
-//    type: "p_without_link",
-//    text: "what is this?",
-//  }, {
-//    type: "p_with_link",
-//    href: "/d/some/root/image.png",
-//    text: "image.png",
-//  }, {
-//    type: "p_with_link",
-//    href: "http://tacogips.me/some.jpg",
-//    text: "aaa",
-//  }, {
-//    type: "p_without_link",
-//    text: "what is this, again?",
-//  }, {
-//    type: "h2",
-//    id: "assistant",
-//    text: "assistant",
-//  }, {
-//    type: "pre",
-//    content: "asdf",
-//    class: undefined,
-//  }
-//]
