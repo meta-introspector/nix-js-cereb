@@ -5,6 +5,7 @@ import input_4 from "./message-parse-4.md" with { type: "text" };
 import input_5 from "./message-parse-5.md" with { type: "text" };
 import input_6 from "./message-parse-6.md" with { type: "text" };
 import input_7 from "./message-parse-7.md" with { type: "text" };
+import input_8 from "./message-parse-8.md" with { type: "text" };
 
 import { type MessageBody } from "~/ai-service";
 
@@ -32,7 +33,7 @@ const datas: (string | QueryMessages)[][] = [
         {
           messages: [
             {
-              text: "this  is a user message\n**some internal link which is not exists**",
+              text: "this  is a user message\n[[some internal link which is not exists]]",
               type: "text",
             },
           ],
@@ -299,6 +300,7 @@ const datas: (string | QueryMessages)[][] = [
       ],
     },
   ],
+  //TODO(tacogips) test about  message-parse-8.md
 ];
 
 export default datas;

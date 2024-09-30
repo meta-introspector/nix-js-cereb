@@ -1,20 +1,28 @@
 import { Marked, Renderer, MarkedOptions } from "@ts-stack/markdown";
-import { isUrl, isFilePath, pathOrUrlToAttachmentMessage } from "~/attachment";
+import { isUrl, pathOrUrlToAttachmentMessage } from "~/attachment";
 import {
   Role,
   type MessageHistory,
   type MessageBody,
+  newIgnoreBody,
   newTextBody,
   type TokenUsage,
+  detectImageTypeFromFilePathOrUrl,
 } from "~/ai-service";
 import path from "path";
 import * as cheerio from "cheerio";
 import { type QueryMessages } from "~/query";
 
-const obsidianInternalLinkRegex = /\[\[([^\[\]]+?)\]\]/g;
+const obsidianInternalLinkRegex = /!\[\[([^\[\]]+?)\]\]/g;
 
 function roleDescription(role: Role): string {
   return "cereb-" + role;
+}
+
+enum AttachmentClass {
+  Image = "attached-image",
+  Link = "link",
+  InnerLink = "inner-link",
 }
 
 class CustomMdRenderer extends Renderer {
@@ -28,46 +36,70 @@ class CustomMdRenderer extends Renderer {
 
   override link(href: string, title: string, text: string): string {
     let destination;
-    if (isUrl(href)) {
-      destination = href;
+
+    let imageType = detectImageTypeFromFilePathOrUrl(href);
+
+    if (imageType) {
+      if (isUrl(href)) {
+        destination = href;
+      } else {
+        destination = this.currentDirPath
+          ? path.join(this.currentDirPath, href)
+          : href;
+      }
+
+      return `<a href="${destination}" class="${AttachmentClass.Link}">${text}</a>`;
     } else {
-      destination = this.currentDirPath
-        ? path.join(this.currentDirPath, href)
-        : href;
+      return `[${text}](${href})`;
     }
-
-    return `<a href="${destination}">${text}</a>`;
   }
-
   override image(href: string, title: string, text: string): string {
-    return this.link(href, title, text);
+    let destination;
+
+    let imageType = detectImageTypeFromFilePathOrUrl(href);
+    if (imageType) {
+      if (isUrl(href)) {
+        destination = href;
+      } else {
+        destination = this.currentDirPath
+          ? path.join(this.currentDirPath, href)
+          : href;
+      }
+
+      return `<a href="${destination}" class="${AttachmentClass.Image}">${text}</a>`;
+    } else {
+      return href;
+    }
   }
 
   override paragraph(text: string) {
     text = text.replace(obsidianInternalLinkRegex, (match, innerLink) => {
-      let destination;
       if (isUrl(innerLink)) {
-        destination = innerLink;
-        return `<a href="${destination}">${innerLink}</a>`;
+        return "![[" + innerLink + "]]";
+      }
+      let destination;
+      let imageType = detectImageTypeFromFilePathOrUrl(innerLink);
+      if (imageType) {
+        destination = this.rootDirPath
+          ? path.join(this.rootDirPath, innerLink)
+          : innerLink;
+        return `<a href="${destination}" class="${AttachmentClass.InnerLink}">${innerLink}</a> ![[${innerLink}]]`;
       } else {
-        //destination = this.rootDirPath
-        //  ? path.join(this.rootDirPath, innerLink)
-        //  : innerLink;
-        //TODO(tacogips) open the innternal link as attachement in the future
-        return "**" + innerLink + "**";
+        return "![[" + innerLink + "]]";
       }
     });
+
     return `<p>` + text + `</p>\n`;
   }
 }
 
 export function parseMarkdownAsHtml(
   md: string,
-  rootWorkingDir?: string,
+  rootDir?: string,
   currentDir?: string,
 ): string {
   const result = Marked.parse(md, {
-    renderer: new CustomMdRenderer(rootWorkingDir, currentDir),
+    renderer: new CustomMdRenderer(rootDir, currentDir),
     gfm: true,
     tables: true,
     breaks: false,
@@ -101,6 +133,7 @@ export type Elem =
       type: "p_with_link";
       href?: string;
       text: string;
+      class: string | undefined;
     }
   | {
       type: "p_without_link";
@@ -154,12 +187,15 @@ export function htmlToElems(html: string): Array<Elem> {
         });
         break;
       case "p":
-        const link = el.find("a");
-        if (link.length > 0) {
-          elements.push({
-            type: "p_with_link",
-            href: link.attr("href"),
-            text: link.text(),
+        const links = el.find("a");
+        if (links.length > 0) {
+          links.each((index, eachLink) => {
+            elements.push({
+              type: "p_with_link",
+              href: parser(eachLink).attr("href"),
+              text: parser(eachLink).text(),
+              class: parser(eachLink).attr("class"),
+            });
           });
         } else {
           elements.push({
@@ -281,6 +317,24 @@ export async function elemsToMessage(
             await pathOrUrlToAttachmentMessage(eachElem.href),
           );
         }
+
+        let ignoreBody: string | undefined;
+        switch (eachElem.class) {
+          case AttachmentClass.Image:
+            ignoreBody = `![${eachElem.text}](${eachElem.href})`;
+            break;
+          case AttachmentClass.InnerLink:
+            ignoreBody = `![[${eachElem.href}]]`;
+            break;
+          case AttachmentClass.Link:
+            ignoreBody = `[${eachElem.text}](${eachElem.href})`;
+            break;
+        }
+
+        if (ignoreBody) {
+          currentRoleMessages.push(newIgnoreBody(ignoreBody));
+        }
+
         break;
 
       case "p_without_link":
@@ -325,11 +379,13 @@ export async function elemsToMessage(
 
 export async function messagesFromMarkdown(
   md: string,
-  rootWorkingDir?: string,
+  rootDir?: string,
   currentDir?: string,
 ): Promise<QueryMessages> {
-  const parsedHtml = parseMarkdownAsHtml(md, rootWorkingDir, currentDir);
+  const parsedHtml = parseMarkdownAsHtml(md, currentDir);
+
   const elems = htmlToElems(parsedHtml);
+
   return await elemsToMessage(elems);
 }
 
@@ -341,7 +397,7 @@ export function messageBodyToMarkdown(
 ): string {
   let content = contents
     .map((content) => {
-      if (content.type === "text") {
+      if (content.type === "text" || content.type === "ignore") {
         return content.text;
       }
       return null;
