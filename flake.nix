@@ -46,8 +46,6 @@
           ];
           shellHook = ''
             echo "Welcome to the development environment!"
-            echo "To generate node-packages.nix, run:"
-            echo "node2nix -i node-packages.json"
           '';
         };
         packages.cereb = pkgs.stdenv.mkDerivation {
